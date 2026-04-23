@@ -235,9 +235,19 @@ class _CarruselHorariosDialogState extends State<CarruselHorariosDialog> {
                   child: Image.asset(
                     widget.carrera.imagenesHorarios[index],
                     fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) => const Center(
-                      child: Text("Error al cargar la imagen", style: TextStyle(color: Colors.red)),
-                    ),
+                    errorBuilder: (context, error, stackTrace) {
+                      /// [MANUAL_ERROR: ERR_IMG_01]
+                      /// Descripción: Falla de renderizado de la retícula u horario de una carrera específica.
+                      /// Causa: Referencia nula al asset, archivo de imagen corrompido, o ruta (path) incorrecto en la definición de la clase Carrera.
+                      /// Solución: Verificar que la imagen referenciada exista en `assets/Horarios/` y que esté listada en el bloque de assets en `pubspec.yaml`.
+                      return const Center(
+                        child: Text(
+                          "Lo sentimos, la imagen está dañada o no se encontró.\nCódigo: ERR_IMG_01", 
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.red, fontSize: 18)
+                        ),
+                      );
+                    },
                   ),
                 );
               },

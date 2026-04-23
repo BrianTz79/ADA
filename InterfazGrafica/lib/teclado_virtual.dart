@@ -60,7 +60,17 @@ class AdaVirtualKeyboard extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => onKeyPressed(label),
+        onTap: () {
+          try {
+            onKeyPressed(label);
+          } catch (e) {
+            /// [MANUAL_ERROR: ERR_KEY_01]
+            /// Descripción: Fallo crítico al registrar inserción desde el teclado táctil virtual.
+            /// Causa: La función callback que maneja la inserción de texto arrojó una excepción no controlada en su lógica.
+            /// Solución: Revisar las validaciones del estado (setState) en main.dart al invocar `onKeyPressed`.
+            debugPrint("ERR_KEY_01: $e");
+          }
+        },
         borderRadius: BorderRadius.circular(12), // Bordes más redondeados
         child: Container(
           width: width,

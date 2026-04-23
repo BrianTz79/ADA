@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 import shutil
@@ -29,18 +29,38 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     # /// Endpoint para recibir el audio de Flutter, guardarlo y transcribirlo localmente.
     temp_file = f"temp_{audio.filename}"
     
-    with open(temp_file, "wb") as buffer:
-        shutil.copyfileobj(audio.file, buffer)
+    try:
+        with open(temp_file, "wb") as buffer:
+            shutil.copyfileobj(audio.file, buffer)
+        if os.path.getsize(temp_file) < 100:
+            raise ValueError("File too small")
+    except Exception as e:
+        """
+        /// [MANUAL_ERROR: ERR_WHP_FILE]
+        /// Descripción: El archivo de audio recibido está corrupto, es inválido o no es un audio.
+        /// Causa: El cliente subió una trama truncada o el sistema de archivos falló al escribir.
+        /// Solución: Revisar el espacio en disco de la Raspberry, y validar los permisos de lectura/escritura.
+        """
+        raise HTTPException(status_code=500, detail="ERR_WHP_FILE")
     
     try:
-        segments, info = model.transcribe(
-            temp_file, 
-            beam_size=5,
-            language="es",
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=1000, speech_pad_ms=400),
-            initial_prompt="Instituto Tecnológico de Tijuana, ITT, constancia de estudios, servicio social, semestre, kárdex, retícula, galgos, ADA."
-        )
+        try:
+            segments, info = model.transcribe(
+                temp_file, 
+                beam_size=5,
+                language="es",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=1000, speech_pad_ms=400),
+                initial_prompt="Instituto Tecnológico de Tijuana, ITT, constancia de estudios, servicio social, semestre, kárdex, retícula, galgos, ADA."
+            )
+        except Exception as e:
+            """
+            /// [MANUAL_ERROR: ERR_WHP_MODEL]
+            /// Descripción: Falla interna por falta de memoria (crashing) en el Motor Whisper.
+            /// Causa: Faster-whisper se quedó sin RAM suficiente o el VAD falló al filtrar canales.
+            /// Solución: Reducir el model_size a "tiny" o revisar la sobrecarga general de la CPU en la Pi.
+            """
+            raise HTTPException(status_code=500, detail="ERR_WHP_MODEL")
         
         transcription = ""
         for segment in segments:

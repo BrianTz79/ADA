@@ -193,17 +193,41 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   /// /// Este módulo está diseñado para correr localmente en el nodo Edge (Raspberry Pi).
   Future<void> _startRecording() async {
     if (await _audioRecorder.isRecording()) return;
-    if (await _audioRecorder.hasPermission()) {
-      setState(() {
-        _currentPhase = KioskPhase.listening;
-        _subtitleText = _isEnglish ? "Recording..." : "Grabando...";
-      });
-      _karaokeWordIndex = -1;
+    try {
+      if (await _audioRecorder.hasPermission()) {
+        setState(() {
+          _currentPhase = KioskPhase.listening;
+          _subtitleText = _isEnglish ? "Recording..." : "Grabando...";
+        });
+        _karaokeWordIndex = -1;
 
-      await _audioRecorder.start(
-        const RecordConfig(encoder: AudioEncoder.wav),
-        path: 'kiosco_recording.wav',
-      );
+        await _audioRecorder.start(
+          const RecordConfig(encoder: AudioEncoder.wav),
+          path: 'kiosco_recording.wav',
+        );
+      } else {
+        /// [MANUAL_ERROR: ERR_MIC_01]
+        /// Descripción: Falla al acceder al hardware del micrófono o falta de permisos.
+        /// Causa: El sistema operativo o el navegador bloqueó el acceso al micrófono, o no hay hardware de audio detectado.
+        /// Solución: Revisar los permisos de la aplicación o navegador, y verificar la conexión física del micrófono en la Raspberry Pi.
+        setState(() {
+          _currentPhase = KioskPhase.idle;
+          _subtitleText = _isEnglish 
+              ? "Sorry, I had a technical problem. Please try again. (Code: ERR_MIC_01)" 
+              : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_MIC_01)";
+        });
+      }
+    } catch (e) {
+      /// [MANUAL_ERROR: ERR_MIC_01]
+      /// Descripción: Falla al acceder al hardware del micrófono o falta de permisos.
+      /// Causa: Error interno al inicializar el objeto `_audioRecorder` o el dispositivo de audio.
+      /// Solución: Reiniciar la aplicación y comprobar si `arecord` funciona en la Raspberry.
+      setState(() {
+        _currentPhase = KioskPhase.idle;
+        _subtitleText = _isEnglish 
+            ? "Sorry, I had a technical problem. Please try again. (Code: ERR_MIC_01)" 
+            : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_MIC_01)";
+      });
     }
   }
 
@@ -228,10 +252,28 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           request.files.add(await http.MultipartFile.fromPath('audio', path));
         }
 
-        final response = await request.send();
+        final response = await request.send().timeout(const Duration(seconds: 20), onTimeout: () {
+          throw Exception("ERR_NET_01");
+        });
+        
         if (response.statusCode == 200) {
           final resStr = await response.stream.bytesToString();
-          final data = json.decode(resStr);
+          var data;
+          try {
+            data = json.decode(resStr);
+          } catch (e) {
+            /// [MANUAL_ERROR: ERR_PAR_01]
+            /// Descripción: Falla de lectura de datos. La respuesta del servidor no tiene un formato válido.
+            /// Causa: El microservicio Whisper arrojó una excepción fatal o devolvió HTML/texto plano en lugar de JSON.
+            /// Solución: Revisar logs en `whisper.log` para identificar excepciones de Python.
+            setState(() {
+              _currentPhase = KioskPhase.idle;
+              _subtitleText = _isEnglish 
+                  ? "Sorry, I had a technical problem. Please try again. (Code: ERR_PAR_01)" 
+                  : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_PAR_01)";
+            });
+            return;
+          }
           final text = data['text'] ?? '';
           
           if (text.toString().trim().isNotEmpty) {
@@ -246,16 +288,41 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
             });
           }
         } else {
+          /// [MANUAL_ERROR: ERR_WHP_01]
+          /// Descripción: Falla de conexión con el microservicio Whisper (Timeout o Connection Refused).
+          /// Causa: El servidor devolvió un código HTTP diferente de 200, indicando fallo en el procesamiento.
+          /// Solución: Revisar los logs de la terminal de Whisper (`whisper.log`) para ver detalles del error interno.
           setState(() {
-             _currentPhase = KioskPhase.idle;
-             _subtitleText = "Error in Whisper API: ${response.statusCode}";
+            _currentPhase = KioskPhase.idle;
+            _subtitleText = _isEnglish 
+                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_WHP_01)" 
+                : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_WHP_01)";
           });
         }
       } catch (e) {
-        setState(() {
-           _currentPhase = KioskPhase.idle;
-           _subtitleText = "Fallo de conexión. ¿Está encendido el Servidor Whisper en Python?";
-        });
+        if (e.toString().contains("ERR_NET_01") || e.toString().contains("TimeoutException")) {
+          /// [MANUAL_ERROR: ERR_NET_01]
+          /// Descripción: Falla de red por tiempo agotado (Timeout).
+          /// Causa: El servidor tardó demasiado en responder a la carga de audio, posiblemente por sobrecarga en CPU.
+          /// Solución: Revisar latencia de red y uso de procesador htop en la Raspberry Pi.
+          setState(() {
+            _currentPhase = KioskPhase.idle;
+            _subtitleText = _isEnglish 
+                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_NET_01)" 
+                : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_NET_01)";
+          });
+        } else {
+          /// [MANUAL_ERROR: ERR_WHP_01]
+          /// Descripción: Falla de conexión con el microservicio Whisper (Timeout o Connection Refused).
+          /// Causa: No se pudo establecer conexión de red (SocketException) con `localhost:5000`.
+          /// Solución: Asegurarse de que el script de Whisper está corriendo activamente y el puerto 5000 está libre.
+          setState(() {
+            _currentPhase = KioskPhase.idle;
+            _subtitleText = _isEnglish 
+                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_WHP_01)" 
+                : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_WHP_01)";
+          });
+        }
       }
     } else {
       setState(() {
@@ -510,24 +577,37 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       ),
     ];
 
-    TutorialCoachMark(
-      targets: targets,
-      colorShadow: Colors.black54, // Capa semitransparente requerida
-      textSkip: _isEnglish ? "SKIP" : "SALTAR",
-      paddingFocus: 10,
-      opacityShadow: 0.8,
-      hideSkip: true, // Ocultamos el saltar por defecto para usar nuestros propios botones
-      onFinish: () {
-        /// Transición Visual: El velo oscuro desaparece y el sistema vuelve orgánicamente al diseño centrado.
-        setState(() => _currentPhase = KioskPhase.idle);
-      },
-      onClickTarget: (target) {},
-      onSkip: () {
-        /// Transición Visual: La tarjeta flotante se esfuma y los componentes recuperan su posición inactiva original (idle).
-        setState(() => _currentPhase = KioskPhase.idle);
-        return true;
-      },
-    ).show(context: context);
+    try {
+      TutorialCoachMark(
+        targets: targets,
+        colorShadow: Colors.black54, // Capa semitransparente requerida
+        textSkip: _isEnglish ? "SKIP" : "SALTAR",
+        paddingFocus: 10,
+        opacityShadow: 0.8,
+        hideSkip: true, // Ocultamos el saltar por defecto para usar nuestros propios botones
+        onFinish: () {
+          /// Transición Visual: El velo oscuro desaparece y el sistema vuelve orgánicamente al diseño centrado.
+          setState(() => _currentPhase = KioskPhase.idle);
+        },
+        onClickTarget: (target) {},
+        onSkip: () {
+          /// Transición Visual: La tarjeta flotante se esfuma y los componentes recuperan su posición inactiva original (idle).
+          setState(() => _currentPhase = KioskPhase.idle);
+          return true;
+        },
+      ).show(context: context);
+    } catch (e) {
+      /// [MANUAL_ERROR: ERR_SYS_01]
+      /// Descripción: Falla crítica del sistema al levantar componentes flotantes masivos de la UI.
+      /// Causa: Estado inesperado, variables corruptas en la matriz de widgets, o pérdida del árbol estructural.
+      /// Solución: Este error requiere que el kiosco completo sea refrescado desde cero (Command+R o reiniciar app principal).
+      setState(() {
+        _currentPhase = KioskPhase.idle;
+        _subtitleText = _isEnglish 
+            ? "System error processing UI. (Code: ERR_SYS_01)" 
+            : "Error de sistema al procesar UI. (Código: ERR_SYS_01)";
+      });
+    }
   }
 
   /// Transición Visual: Un pequeño domo o tarjeta interactiva surge suspendida cerca del elemento enfocado, 
@@ -643,7 +723,9 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
         _karaokeWordIndex = -1; // -1 significa que entra flujo nuevo
       });
 
-      final response = await http.Client().send(request);
+      final response = await http.Client().send(request).timeout(const Duration(seconds: 40), onTimeout: () {
+        throw Exception("ERR_NET_01");
+      });
 
       if (response.statusCode == 200) {
         // Escuchamos la tubería de bytes en tiempo real
@@ -653,19 +735,53 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           });
           _scrollToBottom();
         }, onError: (error) {
+          /// [MANUAL_ERROR: ERR_API_01]
+          /// Descripción: Falla de conexión con el Backend principal (Ollama/RAG) durante el straming.
+          /// Causa: El socket de respuesta en tiempo real fue abortado.
+          /// Solución: Revisar la estabilidad de red y los logs del backend.
           setState(() {
-            _subtitleText += "\n[Error en el hilo de conexión]";
+            _currentPhase = KioskPhase.idle;
+            _subtitleText = _isEnglish 
+                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
+                : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
           });
         });
       } else {
+        /// [MANUAL_ERROR: ERR_API_01]
+        /// Descripción: Falla de conexión con el Backend principal (Ollama/RAG).
+        /// Causa: El backend (puerto 8000) arrojó un código de error HTTP en la respuesta.
+        /// Solución: Revisar `backend.log` para trazas de errores internos (ej. caída de Ollama).
         setState(() {
-          _subtitleText = "Error: ADA devolvió el código ${response.statusCode}";
+          _currentPhase = KioskPhase.idle;
+          _subtitleText = _isEnglish 
+              ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
+              : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
         });
       }
     } catch (e) {
-      setState(() {
-        _subtitleText = "Fallo de conexión. ¿Está encendido el Servidor de ADA en Python?";
-      });
+      if (e.toString().contains("ERR_NET_01") || e.toString().contains("TimeoutException")) {
+        /// [MANUAL_ERROR: ERR_NET_01]
+        /// Descripción: Falla de red por tiempo agotado (Timeout).
+        /// Causa: El motor backend principal de ADA tardó demasiado en iniciar el streaming de la respuesta.
+        /// Solución: Revisar cuellos de botella en Ollama y rendimiento de hardware.
+        setState(() {
+          _currentPhase = KioskPhase.idle;
+          _subtitleText = _isEnglish 
+              ? "Sorry, I had a technical problem. Please try again. (Code: ERR_NET_01)" 
+              : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_NET_01)";
+        });
+      } else {
+        /// [MANUAL_ERROR: ERR_API_01]
+        /// Descripción: Falla de conexión con el Backend principal (Ollama/RAG).
+        /// Causa: Conexión de red rechazada, el servidor principal en el puerto 8000 no se está ejecutando.
+        /// Solución: Iniciar el backend con el script respectivo o revisar firewall.
+        setState(() {
+          _currentPhase = KioskPhase.idle;
+          _subtitleText = _isEnglish 
+              ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
+              : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
+        });
+      }
     }
   }
 

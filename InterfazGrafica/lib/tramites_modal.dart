@@ -119,7 +119,17 @@ class TramitesModal extends StatelessWidget {
               ),
               child: InkWell(
                 borderRadius: BorderRadius.circular(12),
-                onTap: () => _mostrarDetalleTramite(context, tramite),
+                onTap: () {
+                  try {
+                    _mostrarDetalleTramite(context, tramite);
+                  } catch (e) {
+                    /// [MANUAL_ERROR: ERR_CTX_01]
+                    /// Descripción: Falla inminente al intentar levantar un modal informativo sobre los módulos UI.
+                    /// Causa: Pérdida del identificador `BuildContext` original antes de invocar la animación de la ventana flotante AlertDialog.
+                    /// Solución: Evitar reconstrucciones asíncronas no controladas y asegurar el uso de un NavigationKey estático.
+                    debugPrint('ERR_CTX_01: $e');
+                  }
+                },
                 child: Padding(
                   padding: const EdgeInsets.all(12.0),
                   child: Row(
