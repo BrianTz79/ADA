@@ -1,0 +1,40 @@
+# =========================
+# FLUTTER / DART (Frontend)
+# =========================
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+*.log
+
+# =========================
+# PYTHON / BACKEND
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# =========================
+# BASE DE DATOS Y SCRAPING
+# =========================
+# Ignora las carpetas donde se guarda el RAG y los documentos pesados
+chroma/
+vector_db/
+scraped_data/
+raw_pdfs/
+documentos_itt/
+*.db
+*.sqlite3
+*.csv
+*.pdf
+
+# =========================
+# SISTEMA OPERATIVO / IDE
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
