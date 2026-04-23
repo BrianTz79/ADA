@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'dart:async'; 
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:record/record.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'tramites_modal.dart';
 import 'horarios_modal.dart';
 import 'teclado_virtual.dart'; // <--- Importamos nuestro nuevo teclado accesible
@@ -62,6 +64,8 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   final ScrollController _scrollController = ScrollController();
   int _karaokeWordIndex = -1;
 
+  final AudioRecorder _audioRecorder = AudioRecorder(); // Instancia para la captura de audio
+
   // Mantenemos getter por compatibilidad si es necesario, o lo usamos directamente.
   bool get _isActive => _currentPhase != KioskPhase.idle;
   
@@ -95,6 +99,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   void dispose() {
     _timer.cancel(); 
     _scrollController.dispose();
+    _audioRecorder.dispose();
     super.dispose();
   }
 
@@ -184,24 +189,82 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
     return "${_currentTime.day.toString().padLeft(2, '0')}/${_currentTime.month.toString().padLeft(2, '0')}/${_currentTime.year}";
   }
 
-  /// Transición Visual: Modifica instantáneamente la apariencia interactiva general:
-  /// Si estaba en pausa (idle), la esfera central del micrófono adquiere diseño acústico y el título solicita la consulta.
-  /// Si estaba escuchando, se detiene la animación y el kiosco vuelve a contraerse mostrando el texto habitual "Hola ADA".
-  void _toggleListening() {
-    setState(() {
-      if (_currentPhase == KioskPhase.idle) {
+  /// Inicia la grabación de audio al mantener presionado (Push-to-Talk)
+  /// /// Este módulo está diseñado para correr localmente en el nodo Edge (Raspberry Pi).
+  Future<void> _startRecording() async {
+    if (await _audioRecorder.isRecording()) return;
+    if (await _audioRecorder.hasPermission()) {
+      setState(() {
         _currentPhase = KioskPhase.listening;
-        _subtitleText = _isEnglish 
-            ? "Listening... How can I help you?" 
-            : "Escuchando... ¿En qué te puedo ayudar?";
-      } else {
-        _currentPhase = KioskPhase.idle;
-        _subtitleText = _isEnglish 
+        _subtitleText = _isEnglish ? "Recording..." : "Grabando...";
+      });
+      _karaokeWordIndex = -1;
+
+      await _audioRecorder.start(
+        const RecordConfig(encoder: AudioEncoder.wav),
+        path: 'kiosco_recording.wav',
+      );
+    }
+  }
+
+  /// Detiene la grabación y envía el audio a Python (Push-to-Talk)
+  /// /// Este módulo está diseñado para correr localmente en el nodo Edge (Raspberry Pi).
+  Future<void> _stopRecording() async {
+    if (!(await _audioRecorder.isRecording())) return;
+
+    setState(() {
+      _currentPhase = KioskPhase.thinking;
+      _subtitleText = _isEnglish ? "Processing..." : "Procesando...";
+    });
+
+    final path = await _audioRecorder.stop();
+    if (path != null) {
+      try {
+        final request = http.MultipartRequest('POST', Uri.parse('http://localhost:5000/transcribe'));
+        if (kIsWeb) {
+          final info = await http.get(Uri.parse(path));
+          request.files.add(http.MultipartFile.fromBytes('audio', info.bodyBytes, filename: 'audio.wav'));
+        } else {
+          request.files.add(await http.MultipartFile.fromPath('audio', path));
+        }
+
+        final response = await request.send();
+        if (response.statusCode == 200) {
+          final resStr = await response.stream.bytesToString();
+          final data = json.decode(resStr);
+          final text = data['text'] ?? '';
+          
+          if (text.toString().trim().isNotEmpty) {
+            _askAda(text); // Pasa lo transcrito a nuestro backend principal
+          } else {
+            // Guard Clause contra alucinaciones vacías
+            setState(() {
+              _currentPhase = KioskPhase.idle;
+              _subtitleText = _isEnglish 
+                  ? "Tap the button or say 'Hi ADA' to start..." 
+                  : "Toca el botón o di 'Hola ADA' para empezar...";
+            });
+          }
+        } else {
+          setState(() {
+             _currentPhase = KioskPhase.idle;
+             _subtitleText = "Error in Whisper API: ${response.statusCode}";
+          });
+        }
+      } catch (e) {
+        setState(() {
+           _currentPhase = KioskPhase.idle;
+           _subtitleText = "Fallo de conexión. ¿Está encendido el Servidor Whisper en Python?";
+        });
+      }
+    } else {
+      setState(() {
+         _currentPhase = KioskPhase.idle;
+         _subtitleText = _isEnglish 
             ? "Tap the button or say 'Hi ADA' to start..." 
             : "Toca el botón o di 'Hola ADA' para empezar...";
-      }
-      _karaokeWordIndex = -1;
-    });
+      });
+    }
   }
 
   /// Transición Visual: Toda la interfaz del kiosco (textos, modales, etiquetas y subtítulos activos) intercambia instantáneamente sus cadenas de caracteres de Español a Inglés (o viceversa) sin recargar la pantalla.
@@ -981,9 +1044,13 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
                           ),
 
                           // Orbe del Micrófono
-                          GestureDetector(
+                          /// Se utiliza [Listener] en lugar de GestureDetector para evitar
+                          /// la cancelación inmediata por "finger drift" en pantallas táctiles de kioscos.
+                          Listener(
                             key: _micKey,
-                            onTap: _toggleListening,
+                            onPointerDown: (_) => _startRecording(),
+                            onPointerUp: (_) => _stopRecording(),
+                            onPointerCancel: (_) => _stopRecording(),
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 300),
                               height: _currentPhase == KioskPhase.listening ? 220 : 200,
