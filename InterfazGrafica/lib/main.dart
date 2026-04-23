@@ -1141,19 +1141,12 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
                                   margin: const EdgeInsets.only(bottom: 30),
                                   width: 250,
                                   height: 250,
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[200],
-                                    borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(color: Colors.grey[400]!, width: 2),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.transparent,
                                   ),
-                                  child: const Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.image, size: 80, color: Colors.black26),
-                                      SizedBox(height: 10),
-                                      Text("Mascota Avatar", style: TextStyle(color: Colors.black38, fontSize: 18)),
-                                      // /// TODO: Reemplazar con asset de mascota (GIF/Rive)
-                                    ],
+                                  child: Image.asset(
+                                    'assets/mascota.gif',
+                                    fit: BoxFit.contain,
                                   ),
                                 )
                               : const SizedBox.shrink(),

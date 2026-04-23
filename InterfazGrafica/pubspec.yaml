@@ -64,6 +64,7 @@ flutter:
     - assets/mapa.jpg
     - assets/qr.png
     - assets/calendario.jpeg
+    - assets/mascota.gif
     - assets/Horarios/SistemasComputacionales/
 
   # To add assets to your application, add an assets section, like this:

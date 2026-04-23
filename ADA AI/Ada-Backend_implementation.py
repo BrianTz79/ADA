@@ -52,7 +52,15 @@ def obtener_contexto_dinamico(query, k_inicial=40, k_final=5, threshold=-2.0):
     2. Re-clasifica los resultados usando un Cross-Encoder.
     3. Filtra por umbral de relevancia.
     """
-    docs = vector_db.similarity_search(query, k=k_inicial)
+    try:
+        docs = vector_db.similarity_search(query, k=k_inicial)
+    except Exception as e:
+        # /// [MANUAL_ERROR: ERR_ADA_DB_01]
+        # /// Descripción: Falla de lectura/escritura en ChromaDB o base vectorial.
+        # /// Causa: Base de índices corrupta o motor vectorial inalcanzable, impidiendo recuperar contexto.
+        # /// Solución: Verificar si existe DB_DIR y permisos, o regenerar índices mediante el scraper.
+        print("Error en DB Vectorial:", str(e))
+        raise HTTPException(status_code=500, detail="ERR_ADA_DB_01")
     
     if not docs:
         return []
@@ -62,7 +70,11 @@ def obtener_contexto_dinamico(query, k_inicial=40, k_final=5, threshold=-2.0):
         try:
             datos_json = json.loads(d.page_content)
             contenido = datos_json.get("contenido", d.page_content)
-        except:
+        except Exception as e:
+            # /// [MANUAL_ERROR: ERR_ADA_RAG_01]
+            # /// Descripción: Falla al parsear un documento de contexto de la base vectorial.
+            # /// Causa: El texto scrapeado almacenado en la DB no cumple con esquema JSON estricto o está corrupto.
+            # /// Solución: Limpiar la base vectorizada y usar el Scraper en su modalidad normalizada restrictiva.
             contenido = d.page_content
         pares.append([query, contenido])
 
@@ -134,13 +146,21 @@ def ask_ada_rag_stream(query, chat_history):
     first_token = True
     full_response = []
     
-    for chunk in chain.stream({"context": context_text, "question": query, "chat_history": chat_history}):
-        if first_token:
-            print(f"(⚡) ", end="") 
-            first_token = False
-        print(chunk, end="", flush=True)
-        full_response.append(chunk)
-        yield chunk
+    try:
+        for chunk in chain.stream({"context": context_text, "question": query, "chat_history": chat_history}):
+            if first_token:
+                print(f"(⚡) ", end="") 
+                first_token = False
+            print(chunk, end="", flush=True)
+            full_response.append(chunk)
+            yield chunk
+    except Exception as e:
+        # /// [MANUAL_ERROR: ERR_ADA_LLM_01]
+        # /// Descripción: Falla de respuesta de Ollama (timeout, modelo caído o generación abortada).
+        # /// Causa: Ollama Llama3 colapsó por saturación de VRAM, GPU sobreasignada o caída del socket local.
+        # /// Solución: Reiniciar servicio Ollama nativo e inspeccionar terminal de base de datos vectorial local.
+        print(f"\n[Error LLM] La generación colapsó: {str(e)}")
+        raise HTTPException(status_code=500, detail="ERR_ADA_LLM_01")
     
     print(f"\n\n[⏱️ Generación: {time.time() - t_gen_start:.3f}s]")
     
@@ -190,9 +210,15 @@ async def chat_endpoint(request: ChatRequest):
         # text/plain previene que el front sufra armando el buffer.
         return StreamingResponse(ask_ada_rag_stream(request.query, chat_history_global), media_type="text/plain")
         
+    except HTTPException:
+        raise
     except Exception as e:
+        # /// [MANUAL_ERROR: ERR_ADA_SYS_01]
+        # /// Descripción: Falla crítica inesperada en el endpoint o en la tubería FAST API generadora.
+        # /// Causa: Referencia nula extrema o interrupción forzosa de FastAPI.
+        # /// Solución: Reiniciar manualmente el servicio central usando el backend daemon (run.sh).
         print(f"Error procesando query: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error interno de ADA")
+        raise HTTPException(status_code=500, detail="ERR_ADA_SYS_01")
 
 if __name__ == "__main__":
     import uvicorn

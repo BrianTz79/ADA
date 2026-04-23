@@ -83,3 +83,33 @@ A continuación se detalla la red de excepciones diseñadas para evitar el quieb
     *   **Causa:** Insuficiente RAM (Swaps) o estrangulación general de variables nativas al momento de interactuar con el Voice Activity Detector, cortando subitamente la librería binaria en CPU.
     *   **Solución:** Forzar un reingreso manual del servicio limitando estrictamente el modelo de datos.
     *   **Catálogo:** Manual de Administrador Experto.
+
+---
+
+## 3. Backend (ADA AI - Cerebro y RAG)
+
+### Operaciones de Base de Datos y Generación LLM
+
+*   **Código:** `ERR_ADA_DB_01`
+    *   **Descripción:** Falla de lectura/escritura en ChromaDB o base vectorial.
+    *   **Causa:** Base de índices corrupta o motor vectorial inalcanzable, imposibilitando la recuperación del contexto (`kiosco_docs`).
+    *   **Solución:** Verificar si existe el directorio físico de la base de datos y sus permisos; de lo contrario, regenerar los índices con el Scraper RAG.
+    *   **Catálogo:** Manual de Administrador.
+
+*   **Código:** `ERR_ADA_RAG_01`
+    *   **Descripción:** Falla al cargar/leer los documentos de contexto semántico extraídos.
+    *   **Causa:** El texto almacenado o recuperado por el modelo híbrido no cumple con el esquema JSON esperado o está dañado en su sintaxis.
+    *   **Solución:** Inspeccionar los chunks incrustados locales e invocar el proceso normalizador del RAG para limpiar los payloads.
+    *   **Catálogo:** Manual de Administrador / Analista.
+
+*   **Código:** `ERR_ADA_LLM_01`
+    *   **Descripción:** Falla de respuesta de Ollama (timeout, modelo caído o generación abortada).
+    *   **Causa:** El orquestador de Ollama procesando Llama3 colapsó por saturación de VRAM o el *stream socket* cortó la comunicación a la mitad.
+    *   **Solución:** Monitorear `ollama serve` en la placa base y reiniciar el contenedor daemon nativo (`systemctl restart ollama`).
+    *   **Catálogo:** Manual de Administrador Técnico.
+
+*   **Código:** `ERR_ADA_SYS_01`
+    *   **Descripción:** Falla crítica inesperada en el endpoint transaccional principal.
+    *   **Causa:** El flujo global del enrutador de FastAPI fue interrumpido en crudo por referencias nulas, excepciones sin atrapar o el streaming principal estalló a nivel sistema.
+    *   **Solución:** Reiniciar el backend local empleando el script principal de inicialización `./run.sh`.
+    *   **Catálogo:** Manual de Administrador.
