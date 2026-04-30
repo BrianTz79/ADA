@@ -4,6 +4,7 @@ from faster_whisper import WhisperModel
 import shutil
 import os
 import time
+import traceback
 
 app = FastAPI()
 
@@ -35,6 +36,8 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         if os.path.getsize(temp_file) < 100:
             raise ValueError("File too small")
     except Exception as e:
+        print(f"[ERROR WHP_FILE]: {e}")
+        traceback.print_exc()
         """
         /// [MANUAL_ERROR: ERR_WHP_FILE]
         /// Descripción: El archivo de audio recibido está corrupto, es inválido o no es un audio.
@@ -54,6 +57,8 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 initial_prompt="Instituto Tecnológico de Tijuana, ITT, constancia de estudios, servicio social, semestre, kárdex, retícula, galgos, ADA."
             )
         except Exception as e:
+            print(f"[ERROR WHP_MODEL]: {e}")
+            traceback.print_exc()
             """
             /// [MANUAL_ERROR: ERR_WHP_MODEL]
             /// Descripción: Falla interna por falta de memoria (crashing) en el Motor Whisper.
@@ -62,16 +67,21 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             """
             raise HTTPException(status_code=500, detail="ERR_WHP_MODEL")
         
-        transcription = ""
-        for segment in segments:
-            transcription += segment.text + " "
+        try:
+            transcription = ""
+            for segment in segments:
+                transcription += segment.text + " "
+                
+            transcription = transcription.strip()
             
-        transcription = transcription.strip()
-        
-        print(f"[✅ WHISPER TRANSCRIPCIÓN]: \"{transcription}\"")
-        elapsed_time = time.time() - start_time
-        print(f"[⏱️ Tiempo de proceso: {elapsed_time:.2f} segundos]\n")
-        
+            print(f"[✅ WHISPER TRANSCRIPCIÓN]: \"{transcription}\"")
+            elapsed_time = time.time() - start_time
+            print(f"[⏱️ Tiempo de proceso: {elapsed_time:.2f} segundos]\n")
+        except Exception as e:
+            print(f"[ERROR WHP_SEGMENTS]: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail="ERR_WHP_MODEL_SEGMENTS")
+            
     finally:
         # Limpieza del archivo
         if os.path.exists(temp_file):

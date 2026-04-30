@@ -5,6 +5,7 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$BASE_DIR/ADA AI"
 FRONTEND_DIR="$BASE_DIR/InterfazGrafica"
 WHISPER_DIR="$FRONTEND_DIR/Whisper" # <-- Nueva ruta de Whisper
+PIPER_DIR="$BACKEND_DIR/PiperTTS" # <-- Ruta de Piper TTS
 
 # Función para limpiar procesos al cerrar
 cleanup() {
@@ -14,6 +15,9 @@ cleanup() {
     fi
     if [ -n "$WHISPER_PID" ] && kill -0 $WHISPER_PID 2>/dev/null; then
         kill $WHISPER_PID
+    fi
+    if [ -n "$PIPER_PID" ] && kill -0 $PIPER_PID 2>/dev/null; then
+        kill $PIPER_PID
     fi
     echo "✅ Servidores detenidos."
 }
@@ -40,6 +44,13 @@ source venv/bin/activate
 # Dependiendo de cómo lo configuró Antigravity, usamos python3 o uvicorn:
 python3 app.py > "$BASE_DIR/whisper.log" 2>&1 &
 WHISPER_PID=$!
+
+# 3. Iniciar Piper TTS en segundo plano
+echo "🗣️ Iniciando Microservicio Piper TTS... (Logs guardados en piper.log)"
+cd "$PIPER_DIR"
+source ../venv/bin/activate
+python3 tts_service.py > "$BASE_DIR/piper.log" 2>&1 &
+PIPER_PID=$!
 
 echo "⏳ Esperando 5 segundos para que los servicios arranquen..."
 sleep 5

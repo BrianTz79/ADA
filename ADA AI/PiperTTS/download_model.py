@@ -1,12 +1,12 @@
 import os
 import urllib.request
 
-# Repositorio oficial de Piper en HuggingFace
-MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_MX/ald/medium/es_MX-ald-medium.onnx"
-CONFIG_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_MX/ald/medium/es_MX-ald-medium.onnx.json"
+# Repositorio oficial de Piper en HuggingFace (O en este caso, el repositorio de HirCoir)
+MODEL_URL = "https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish/resolve/main/es_MX-cortana-19669-epoch-high.onnx"
+CONFIG_URL = "https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish/resolve/main/es_MX-cortana-19669-epoch-high.onnx.json"
 
-MODEL_FILE = "es_MX-ald-medium.onnx"
-CONFIG_FILE = "es_MX-ald-medium.onnx.json"
+MODEL_FILE = "es_MX-cortana-19669-epoch-high.onnx"
+CONFIG_FILE = "es_MX-cortana-19669-epoch-high.onnx.json"
 
 def download_file(url, target_path):
     print(f"Descargando {target_path}...")

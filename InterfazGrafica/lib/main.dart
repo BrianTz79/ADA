@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:async'; 
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:record/record.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:audioplayers/audioplayers.dart';
 import 'tramites_modal.dart';
 import 'horarios_modal.dart';
 import 'teclado_virtual.dart'; // <--- Importamos nuestro nuevo teclado accesible
@@ -64,7 +66,19 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   final ScrollController _scrollController = ScrollController();
   int _karaokeWordIndex = -1;
 
-  final AudioRecorder _audioRecorder = AudioRecorder(); // Instancia para la captura de audio
+  AudioRecorder _audioRecorder = AudioRecorder(); // Instancia para la captura de audio
+
+  // --- VARIABLES PARA TTS Y KARAOKE ---
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  List<Map<String, dynamic>> _karaokeTimestamps = [];
+  StreamSubscription? _positionSubscription;
+  bool _isSynthesizing = false;
+
+  // --- VARIABLES PARA VAD Y TAP-TO-TALK ---
+  DateTime? _pointerDownTime;
+  StreamSubscription<Amplitude>? _amplitudeSubscription;
+  int _silenceCounter = 0;
+  bool _isTapToTalkActive = false;
 
   // Mantenemos getter por compatibilidad si es necesario, o lo usamos directamente.
   bool get _isActive => _currentPhase != KioskPhase.idle;
@@ -93,10 +107,32 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
         _currentTime = DateTime.now();
       });
     });
+
+    // Configurar listener para la posición del audio y sincronizar karaoke
+    _positionSubscription = _audioPlayer.onPositionChanged.listen((Duration p) {
+      if (_karaokeTimestamps.isNotEmpty) {
+        double currentSeconds = p.inMilliseconds / 1000.0;
+        int newIndex = -1;
+        for (int i = 0; i < _karaokeTimestamps.length; i++) {
+          if (currentSeconds >= _karaokeTimestamps[i]['start'] && currentSeconds <= _karaokeTimestamps[i]['end']) {
+            newIndex = i;
+            break;
+          }
+        }
+        if (newIndex != -1 && newIndex != _karaokeWordIndex) {
+          setState(() {
+            _karaokeWordIndex = newIndex;
+          });
+          _scrollToBottom();
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
+    _positionSubscription?.cancel();
+    _audioPlayer.dispose();
     _timer.cancel(); 
     _scrollController.dispose();
     _audioRecorder.dispose();
@@ -192,6 +228,15 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   /// Inicia la grabación de audio al mantener presionado (Push-to-Talk)
   /// /// Este módulo está diseñado para correr localmente en el nodo Edge (Raspberry Pi).
   Future<void> _startRecording() async {
+    // Si ya está activo Tap-to-Talk y se vuelve a presionar, detenemos manualmente
+    if (_isTapToTalkActive && await _audioRecorder.isRecording()) {
+      await _stopRecording();
+      return;
+    }
+
+    _pointerDownTime = DateTime.now();
+
+    await _audioPlayer.stop();
     if (await _audioRecorder.isRecording()) return;
     try {
       if (await _audioRecorder.hasPermission()) {
@@ -205,11 +250,25 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           const RecordConfig(encoder: AudioEncoder.wav),
           path: 'kiosco_recording.wav',
         );
+
+        // Iniciar VAD (Detección de Silencio)
+        _silenceCounter = 0;
+        _amplitudeSubscription = _audioRecorder
+            .onAmplitudeChanged(const Duration(milliseconds: 100))
+            .listen((amplitude) {
+          if (amplitude.current < -35.0) { // Umbral de silencio
+            _silenceCounter++;
+            // Si pasan 2.5 segundos (25 * 100ms) de silencio y estamos en modo Tap-to-Talk
+            if (_silenceCounter > 25 && _isTapToTalkActive && _currentPhase == KioskPhase.listening) {
+              _stopRecording();
+            }
+          } else {
+            _silenceCounter = 0;
+          }
+        });
+
       } else {
         /// [MANUAL_ERROR: ERR_MIC_01]
-        /// Descripción: Falla al acceder al hardware del micrófono o falta de permisos.
-        /// Causa: El sistema operativo o el navegador bloqueó el acceso al micrófono, o no hay hardware de audio detectado.
-        /// Solución: Revisar los permisos de la aplicación o navegador, y verificar la conexión física del micrófono en la Raspberry Pi.
         setState(() {
           _currentPhase = KioskPhase.idle;
           _subtitleText = _isEnglish 
@@ -219,9 +278,6 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       }
     } catch (e) {
       /// [MANUAL_ERROR: ERR_MIC_01]
-      /// Descripción: Falla al acceder al hardware del micrófono o falta de permisos.
-      /// Causa: Error interno al inicializar el objeto `_audioRecorder` o el dispositivo de audio.
-      /// Solución: Reiniciar la aplicación y comprobar si `arecord` funciona en la Raspberry.
       setState(() {
         _currentPhase = KioskPhase.idle;
         _subtitleText = _isEnglish 
@@ -231,10 +287,28 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
     }
   }
 
-  /// Detiene la grabación y envía el audio a Python (Push-to-Talk)
-  /// /// Este módulo está diseñado para correr localmente en el nodo Edge (Raspberry Pi).
+  /// Detiene la grabación y envía el audio a Python (Push-to-Talk y Tap-to-Talk Auto-Stop)
   Future<void> _stopRecording() async {
+    // Calcular si fue un tap o un hold (si venimos de onPointerUp)
+    if (_pointerDownTime != null) {
+      final duration = DateTime.now().difference(_pointerDownTime!);
+      _pointerDownTime = null; // reset
+      // Si fue muy corto (< 400ms) y NO estamos en Tap-to-Talk, activamos Tap-to-Talk
+      if (duration.inMilliseconds < 400 && !_isTapToTalkActive) {
+        _isTapToTalkActive = true;
+        setState(() {
+          _subtitleText = _isEnglish ? "Recording (Tap to stop)..." : "Grabando (Toca para detener)...";
+        });
+        return; // Retornamos para dejar el micrófono abierto
+      }
+    }
+
     if (!(await _audioRecorder.isRecording())) return;
+
+    // Limpieza de VAD y variables
+    _isTapToTalkActive = false;
+    _amplitudeSubscription?.cancel();
+    _amplitudeSubscription = null;
 
     setState(() {
       _currentPhase = KioskPhase.thinking;
@@ -242,9 +316,15 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
     });
 
     final path = await _audioRecorder.stop();
+    _audioRecorder.dispose();
+    _audioRecorder = AudioRecorder();
+
     if (path != null) {
       try {
-        final request = http.MultipartRequest('POST', Uri.parse('http://localhost:5000/transcribe'));
+        String apiHost = Uri.base.host;
+        if (apiHost.isEmpty) apiHost = '127.0.0.1';
+
+        final request = http.MultipartRequest('POST', Uri.parse('http://$apiHost:5000/transcribe'));
         if (kIsWeb) {
           final info = await http.get(Uri.parse(path));
           request.files.add(http.MultipartFile.fromBytes('audio', info.bodyBytes, filename: 'audio.wav'));
@@ -703,6 +783,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   /// Envía la pregunta del usuario al servidor local y muestra la respuesta
   /// fluyendo en tiempo real en los subtítulos de la pantalla.
   Future<void> _askAda(String question) async {
+    await _audioPlayer.stop();
     if (question.trim().isEmpty) return;
 
     setThinkingPhase();
@@ -745,6 +826,9 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
                 ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
                 : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
           });
+        }, onDone: () {
+          // El RAG ha terminado de generar el texto, procedemos a sintetizar la voz
+          _synthesizeAndPlay(_subtitleText);
         });
       } else {
         /// [MANUAL_ERROR: ERR_API_01]
@@ -780,6 +864,59 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           _subtitleText = _isEnglish 
               ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
               : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
+        });
+      }
+    }
+  }
+
+  /// Conecta con el microservicio Piper TTS y orquesta el playback de audio.
+  Future<void> _synthesizeAndPlay(String fullText) async {
+    if (fullText.trim().isEmpty) return;
+    
+    setState(() {
+      _isSynthesizing = true;
+    });
+
+    try {
+      String apiHost = Uri.base.host;
+      if (apiHost.isEmpty) apiHost = '127.0.0.1';
+
+      final request = http.Request('POST', Uri.parse('http://$apiHost:5001/synthesize'));
+      request.headers['Content-Type'] = 'application/json';
+      request.body = json.encode({'text': fullText});
+
+      final response = await http.Client().send(request).timeout(const Duration(seconds: 30));
+      
+      if (response.statusCode == 200) {
+        final resStr = await response.stream.bytesToString();
+        final data = json.decode(resStr);
+        
+        final String base64Audio = data['audio_base64'];
+        final List<dynamic> ts = data['timestamps'] ?? [];
+        
+        // Convertimos dynamic list a List<Map<String,dynamic>>
+        _karaokeTimestamps = ts.map((e) => Map<String, dynamic>.from(e)).toList();
+        
+        // Detener reproducción anterior por si acaso
+        await _audioPlayer.stop();
+        
+        // Decodificar audio y reproducir (Web / Desktop compatible)
+        final Uint8List audioBytes = base64Decode(base64Audio);
+        await _audioPlayer.play(BytesSource(audioBytes));
+        
+      } else {
+        /// [MANUAL_ERROR: ERR_TTS_01]
+        /// Descripción: El modelo de Piper TTS no está cargado o el servicio falló.
+        print("ERR_TTS_01: Error HTTP ${response.statusCode} en TTS");
+      }
+    } catch (e) {
+      /// [MANUAL_ERROR: ERR_TTS_02]
+      /// Descripción: Falla interna por consumo o colapso al trazar audios.
+      print("ERR_TTS_02: Excepción al conectar con TTS -> $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSynthesizing = false;
         });
       }
     }
@@ -1154,12 +1291,11 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
 
                           // Orbe del Micrófono
                           /// Se utiliza [Listener] en lugar de GestureDetector para evitar
-                          /// la cancelación inmediata por "finger drift" en pantallas táctiles de kioscos.
                           Listener(
                             key: _micKey,
                             onPointerDown: (_) => _startRecording(),
                             onPointerUp: (_) => _stopRecording(),
-                            onPointerCancel: (_) => _stopRecording(),
+                            // Se eliminó onPointerCancel para evitar que el layout shift de AnimatedContainer cancele el audio
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 300),
                               height: _currentPhase == KioskPhase.listening ? 220 : 200,

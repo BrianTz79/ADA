@@ -20,9 +20,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# /// Target del Modelo Acústico Femenino de México
-MODEL_PATH = "es_MX-ald-medium.onnx"
-CONFIG_PATH = "es_MX-ald-medium.onnx.json"
+# /// Target del Modelo Acústico Femenino# --- MODEL CONFIGURATION ---
+MODEL_PATH = "es_MX-cortana-19669-epoch-high.onnx"
+CONFIG_PATH = "es_MX-cortana-19669-epoch-high.onnx.json"
 
 try:
     print("[ADA🎙️] Inicializando Red Neuronal de Síntesis en Memoria...")
@@ -90,7 +90,7 @@ async def synthesize_text(request: SynthesisRequest):
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(voice.config.sample_rate)
-                voice.synthesize(texto_a_hablar, wav_file)
+                voice.synthesize_wav(texto_a_hablar, wav_file)
 
             # 3. Leer el archivo ya cerrado y procesado
             with open(temp_path, "rb") as f:
