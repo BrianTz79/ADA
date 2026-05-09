@@ -98,10 +98,33 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
 
   late Timer _timer;
   DateTime _currentTime = DateTime.now();
+  Timer? _inactivityTimer;
+
+  void _resetInactivityTimer([_]) {
+    _inactivityTimer?.cancel();
+    _inactivityTimer = Timer(const Duration(seconds: 30), _resetToIdle);
+  }
+
+  void _resetToIdle() {
+    if (!mounted) return;
+    if (Navigator.canPop(context)) {
+      Navigator.popUntil(context, (route) => route.isFirst);
+    }
+    if (_currentPhase != KioskPhase.idle) {
+      setState(() {
+        _currentPhase = KioskPhase.idle;
+        _subtitleText = _isEnglish 
+            ? "Tap the button or say 'Hi ADA' to start..." 
+            : "Toca el botón o di 'Hola ADA' para empezar...";
+        _karaokeWordIndex = -1;
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _resetInactivityTimer();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {
         _currentTime = DateTime.now();
@@ -131,6 +154,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
 
   @override
   void dispose() {
+    _inactivityTimer?.cancel();
     _positionSubscription?.cancel();
     _audioPlayer.dispose();
     _timer.cancel(); 
@@ -811,6 +835,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       if (response.statusCode == 200) {
         // Escuchamos la tubería de bytes en tiempo real
         response.stream.transform(utf8.decoder).listen((unPedacitoDeTexto) {
+          _resetInactivityTimer();
           setState(() {
             _subtitleText += unPedacitoDeTexto;
           });
@@ -978,6 +1003,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
                   // AQUI MANDAMOS A LLAMAR A NUESTRO TECLADO EXTERNO
                   AdaVirtualKeyboard(
                     onKeyPressed: (key) {
+                      _resetInactivityTimer();
                       setStateModal(() {
                         if (key == 'BACKSPACE') {
                           if (textController.text.isNotEmpty) {
@@ -1145,7 +1171,11 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _resetInactivityTimer,
+      onPointerMove: _resetInactivityTimer,
+      child: Scaffold(
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(32.0),
@@ -1282,7 +1312,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
                                     color: Colors.transparent,
                                   ),
                                   child: Image.asset(
-                                    'assets/mascota.gif',
+                                    'assets/mono.png',
                                     fit: BoxFit.contain,
                                   ),
                                 )
@@ -1454,7 +1484,7 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           ),
         ),
       ),
-    );
+    ));
   }
 
   /// Construye un botón de acción rápida con icono y texto.
