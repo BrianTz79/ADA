@@ -10,6 +10,7 @@ import 'tramites_modal.dart';
 import 'horarios_modal.dart';
 import 'teclado_virtual.dart'; // <--- Importamos nuestro nuevo teclado accesible
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart'; // <--- Paquete para el Modo Tutorial
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 void main() {
   runApp(const AdaKioskApp());
@@ -64,15 +65,19 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
   
   /// Control de texto y autoscroll
   final ScrollController _scrollController = ScrollController();
-  int _karaokeWordIndex = -1;
-
   AudioRecorder _audioRecorder = AudioRecorder(); // Instancia para la captura de audio
 
   // --- VARIABLES PARA TTS Y KARAOKE ---
   final AudioPlayer _audioPlayer = AudioPlayer();
-  List<Map<String, dynamic>> _karaokeTimestamps = [];
   StreamSubscription? _positionSubscription;
-  bool _isSynthesizing = false;
+  // --- PIPELINE TTS STREAMING ---
+  // Cola de chunks de audio ya sintetizados listos para reproducirse
+  final List<_AudioChunk> _audioQueue = [];
+  bool _isPlayingQueue = false;
+  // Texto acumulado de todos los chunks ya reproducidos (para karaoke por oración)
+  String _spokenText = '';
+  // Texto del chunk que se está reproduciendo ahora mismo
+  String _activeChunkText = '';
 
   // --- VARIABLES PARA VAD Y TAP-TO-TALK ---
   DateTime? _pointerDownTime;
@@ -116,7 +121,6 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
         _subtitleText = _isEnglish 
             ? "Tap the button or say 'Hi ADA' to start..." 
             : "Toca el botón o di 'Hola ADA' para empezar...";
-        _karaokeWordIndex = -1;
       });
     }
   }
@@ -131,25 +135,10 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       });
     });
 
-    // Configurar listener para la posición del audio y sincronizar karaoke
-    _positionSubscription = _audioPlayer.onPositionChanged.listen((Duration p) {
-      if (_karaokeTimestamps.isNotEmpty) {
-        double currentSeconds = p.inMilliseconds / 1000.0;
-        int newIndex = -1;
-        for (int i = 0; i < _karaokeTimestamps.length; i++) {
-          if (currentSeconds >= _karaokeTimestamps[i]['start'] && currentSeconds <= _karaokeTimestamps[i]['end']) {
-            newIndex = i;
-            break;
-          }
-        }
-        if (newIndex != -1 && newIndex != _karaokeWordIndex) {
-          setState(() {
-            _karaokeWordIndex = newIndex;
-          });
-          _scrollToBottom();
-        }
-      }
-    });
+    // El listener de posición ya no se usa para karaoke — el resaltado por oración
+    // se maneja directamente en _playNextInQueue al cambiar _activeChunkText.
+    // Mantenemos la suscripción vacía para no alterar el ciclo de vida de _audioPlayer.
+    _positionSubscription = _audioPlayer.onPositionChanged.listen((_) {});
   }
 
   @override
@@ -182,16 +171,6 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
     });
   }
 
-  /// Transición Visual: El Panel de Texto Dinámico permanece abierto mientras un texto de grandes proporciones aparece gradualmente, iluminando de color Cian cada palabra recitada por ADA en tiempo real (efecto Karaoke).
-  void playKaraokeWord(int index, String fullResponse) {
-    setState(() {
-      _currentPhase = KioskPhase.speaking;
-      _subtitleText = fullResponse;
-      _karaokeWordIndex = index;
-    });
-    _scrollToBottom();
-  }
-
   /// Transición Visual: La lista de texto fluye hacia arriba suavemente mediante una animación de desplazamiento automático cada vez que el texto excede la altura visible inferior.
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -205,39 +184,108 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
     });
   }
 
-  /// Transición Visual: Forma una estructura de tipografía donde las palabras habladas adquieren gran tamaño; la palabra activa resalta en Cian vibrante y peso Bold frente al resto del trazo negro.
+  /// Hoja de estilos Markdown reutilizable para el panel de respuesta.
+  MarkdownStyleSheet get _mdStyle => MarkdownStyleSheet(
+    p: const TextStyle(fontSize: 38, color: Colors.black87, height: 1.5),
+    strong: const TextStyle(fontSize: 38, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    em: const TextStyle(fontSize: 38, fontStyle: FontStyle.italic, color: Colors.black87),
+    h1: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.black87),
+    h2: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold, color: Colors.black87),
+    h3: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    listBullet: const TextStyle(fontSize: 38, color: Color(0xFF06B6D4)),
+    code: const TextStyle(fontSize: 34, fontFamily: 'monospace', backgroundColor: Color(0xFFE0F7FA), color: Colors.black87),
+    codeblockDecoration: BoxDecoration(color: const Color(0xFFE0F7FA), borderRadius: BorderRadius.circular(8)),
+    codeblockPadding: const EdgeInsets.all(12),
+    horizontalRuleDecoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF06B6D4), width: 1))),
+    blockSpacing: 12,
+  );
+
+  /// Hoja de estilos Markdown para el texto ya pronunciado (color cian completo).
+  MarkdownStyleSheet get _mdStyleSpoken => MarkdownStyleSheet(
+    p: const TextStyle(fontSize: 38, color: Color(0xFF06B6D4), height: 1.5),
+    strong: const TextStyle(fontSize: 38, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    em: const TextStyle(fontSize: 38, fontStyle: FontStyle.italic, color: Color(0xFF06B6D4)),
+    h1: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    h2: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    h3: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Color(0xFF06B6D4)),
+    listBullet: const TextStyle(fontSize: 38, color: Color(0xFF06B6D4)),
+    code: const TextStyle(fontSize: 34, fontFamily: 'monospace', backgroundColor: Color(0xFFE0F7FA), color: Color(0xFF06B6D4)),
+    codeblockDecoration: BoxDecoration(color: const Color(0xFFE0F7FA), borderRadius: BorderRadius.circular(8)),
+    codeblockPadding: const EdgeInsets.all(12),
+    horizontalRuleDecoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF06B6D4), width: 1))),
+    blockSpacing: 12,
+  );
+
+  /// Renderiza la respuesta de ADA con soporte Markdown y efecto karaoke por oración.
+  ///
+  /// El karaoke resalta la oración activa en cian intenso; el texto ya pronunciado
+  /// permanece en cian normal; el texto pendiente aparece en negro. Este enfoque por
+  /// oración es robusto con cualquier formato Markdown (listas, negritas, etc.) porque
+  /// no depende de contar palabras tras strip de símbolos.
   Widget _buildKaraokeText() {
     if (_currentPhase != KioskPhase.speaking) {
       return Text(
         _subtitleText,
-        style: const TextStyle(
-          fontSize: 36, // Tamaño accesible
-          color: Colors.black87,
-          fontStyle: FontStyle.italic,
-        ),
+        style: const TextStyle(fontSize: 36, color: Colors.black87, fontStyle: FontStyle.italic),
       );
     }
 
-    // Efecto Karaoke
-    List<String> words = _subtitleText.split(' ');
-    List<TextSpan> spans = [];
+    final full = _subtitleText;
+    final spoken = _spokenText;
+    final active = _activeChunkText;
 
-    for (int i = 0; i < words.length; i++) {
-      bool isHighlighted = i <= _karaokeWordIndex;
-      spans.add(
-        TextSpan(
-          text: "${words[i]} ",
-          style: TextStyle(
-            fontSize: 42, // Texto de respuesta aún más grande
-            fontWeight: isHighlighted ? FontWeight.bold : FontWeight.normal,
-            color: isHighlighted ? const Color(0xFF06B6D4) : Colors.black87,
+    // Caso sin karaoke activo: texto completo en negro
+    if (active.isEmpty && spoken.isEmpty) {
+      return MarkdownBody(data: full, selectable: false, styleSheet: _mdStyle);
+    }
+
+    // Texto ya pronunciado (antes del chunk activo)
+    final spokenEndInFull = spoken.isEmpty ? 0 : full.indexOf(spoken) + spoken.length;
+    final spokenMd = spokenEndInFull > 0 ? full.substring(0, spokenEndInFull) : '';
+
+    // Chunk activo dentro del texto completo
+    int activeStart = -1;
+    if (active.isNotEmpty && spokenEndInFull < full.length) {
+      activeStart = full.indexOf(active, spokenEndInFull);
+    }
+
+    if (activeStart == -1) {
+      // No se encontró el chunk activo textualmente; mostrar todo lo hablado en cian
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (spokenMd.isNotEmpty) MarkdownBody(data: spokenMd, selectable: false, styleSheet: _mdStyleSpoken),
+          if (spokenEndInFull < full.length)
+            MarkdownBody(data: full.substring(spokenEndInFull), selectable: false, styleSheet: _mdStyle),
+        ],
+      );
+    }
+
+    final activeEnd = activeStart + active.length;
+    final beforeActive = full.substring(0, activeStart);
+    final activeMd = full.substring(activeStart, activeEnd);
+    final afterActive = activeEnd < full.length ? full.substring(activeEnd) : '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Texto ya pronunciado: cian
+        if (beforeActive.isNotEmpty)
+          MarkdownBody(data: beforeActive, selectable: false, styleSheet: _mdStyleSpoken),
+        // Oración activa: cian con fondo sutil para distinguirla
+        if (activeMd.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFFE0F7FA),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: MarkdownBody(data: activeMd, selectable: false, styleSheet: _mdStyleSpoken),
           ),
-        ),
-      );
-    }
-
-    return RichText(
-      text: TextSpan(children: spans),
+        // Texto pendiente: negro
+        if (afterActive.isNotEmpty)
+          MarkdownBody(data: afterActive, selectable: false, styleSheet: _mdStyle),
+      ],
     );
   }
 
@@ -268,7 +316,6 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           _currentPhase = KioskPhase.listening;
           _subtitleText = _isEnglish ? "Recording..." : "Grabando...";
         });
-        _karaokeWordIndex = -1;
 
         await _audioRecorder.start(
           const RecordConfig(encoder: AudioEncoder.wav),
@@ -821,11 +868,11 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       request.headers['Content-Type'] = 'application/json';
       request.body = json.encode({'query': question});
 
-      // Limpiamos el texto preparándonos para la cascada de letras
+      // Limpiamos el texto y reseteamos el pipeline TTS
+      _resetTtsPipeline();
       setState(() {
         _currentPhase = KioskPhase.speaking;
         _subtitleText = "";
-        _karaokeWordIndex = -1; // -1 significa que entra flujo nuevo
       });
 
       final response = await http.Client().send(request).timeout(const Duration(seconds: 40), onTimeout: () {
@@ -833,6 +880,9 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       });
 
       if (response.statusCode == 200) {
+        // Buffer para acumular la oración en curso
+        final StringBuffer sentenceBuffer = StringBuffer();
+
         // Escuchamos la tubería de bytes en tiempo real
         response.stream.transform(utf8.decoder).listen((unPedacitoDeTexto) {
           _resetInactivityTimer();
@@ -840,6 +890,30 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
             _subtitleText += unPedacitoDeTexto;
           });
           _scrollToBottom();
+
+          // Acumular en el buffer de oración y disparar síntesis por oración completa
+          sentenceBuffer.write(unPedacitoDeTexto);
+          final accumulated = sentenceBuffer.toString();
+
+          // Buscar delimitadores de oración: . ? ! y salto de línea
+          final matches = RegExp(r'[.?!\n]').allMatches(accumulated);
+          if (matches.isNotEmpty) {
+            final lastMatch = matches.last;
+            final toSynthesize = accumulated.substring(0, lastMatch.end);
+            final remaining = accumulated.substring(lastMatch.end);
+
+            // Dividir en oraciones individuales y encolar cada una
+            final sentences = toSynthesize.split(RegExp(r'(?<=[.?!\n])'));
+            for (final s in sentences) {
+              final clean = s.trim();
+              if (clean.isNotEmpty) {
+                _enqueueSentence(clean, apiHost);
+              }
+            }
+
+            sentenceBuffer.clear();
+            sentenceBuffer.write(remaining);
+          }
         }, onError: (error) {
           /// [MANUAL_ERROR: ERR_API_01]
           /// Descripción: Falla de conexión con el Backend principal (Ollama/RAG) durante el straming.
@@ -847,13 +921,16 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           /// Solución: Revisar la estabilidad de red y los logs del backend.
           setState(() {
             _currentPhase = KioskPhase.idle;
-            _subtitleText = _isEnglish 
-                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
+            _subtitleText = _isEnglish
+                ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)"
                 : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
           });
         }, onDone: () {
-          // El RAG ha terminado de generar el texto, procedemos a sintetizar la voz
-          _synthesizeAndPlay(_subtitleText);
+          // Sintetizar cualquier texto restante que no terminó en puntuación
+          final remainder = sentenceBuffer.toString().trim();
+          if (remainder.isNotEmpty) {
+            _enqueueSentence(remainder, apiHost);
+          }
         });
       } else {
         /// [MANUAL_ERROR: ERR_API_01]
@@ -889,59 +966,6 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
           _subtitleText = _isEnglish 
               ? "Sorry, I had a technical problem. Please try again. (Code: ERR_API_01)" 
               : "Lo siento, tuve un problema técnico. Por favor, intenta de nuevo. (Código: ERR_API_01)";
-        });
-      }
-    }
-  }
-
-  /// Conecta con el microservicio Piper TTS y orquesta el playback de audio.
-  Future<void> _synthesizeAndPlay(String fullText) async {
-    if (fullText.trim().isEmpty) return;
-    
-    setState(() {
-      _isSynthesizing = true;
-    });
-
-    try {
-      String apiHost = Uri.base.host;
-      if (apiHost.isEmpty) apiHost = '127.0.0.1';
-
-      final request = http.Request('POST', Uri.parse('http://$apiHost:5001/synthesize'));
-      request.headers['Content-Type'] = 'application/json';
-      request.body = json.encode({'text': fullText});
-
-      final response = await http.Client().send(request).timeout(const Duration(seconds: 30));
-      
-      if (response.statusCode == 200) {
-        final resStr = await response.stream.bytesToString();
-        final data = json.decode(resStr);
-        
-        final String base64Audio = data['audio_base64'];
-        final List<dynamic> ts = data['timestamps'] ?? [];
-        
-        // Convertimos dynamic list a List<Map<String,dynamic>>
-        _karaokeTimestamps = ts.map((e) => Map<String, dynamic>.from(e)).toList();
-        
-        // Detener reproducción anterior por si acaso
-        await _audioPlayer.stop();
-        
-        // Decodificar audio y reproducir (Web / Desktop compatible)
-        final Uint8List audioBytes = base64Decode(base64Audio);
-        await _audioPlayer.play(BytesSource(audioBytes));
-        
-      } else {
-        /// [MANUAL_ERROR: ERR_TTS_01]
-        /// Descripción: El modelo de Piper TTS no está cargado o el servicio falló.
-        print("ERR_TTS_01: Error HTTP ${response.statusCode} en TTS");
-      }
-    } catch (e) {
-      /// [MANUAL_ERROR: ERR_TTS_02]
-      /// Descripción: Falla interna por consumo o colapso al trazar audios.
-      print("ERR_TTS_02: Excepción al conectar con TTS -> $e");
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSynthesizing = false;
         });
       }
     }
@@ -1507,4 +1531,97 @@ class _AdaMainScreenState extends State<AdaMainScreen> {
       ),
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // PIPELINE TTS STREAMING
+  // Sintetiza oraciones tan pronto llegan del LLM y las encola para reproducción
+  // continua, eliminando la espera entre generación de texto y síntesis de voz.
+  // ---------------------------------------------------------------------------
+
+  /// Resetea el estado del pipeline antes de una nueva respuesta.
+  void _resetTtsPipeline() {
+    _audioQueue.clear();
+    _isPlayingQueue = false;
+    _spokenText = '';
+    _activeChunkText = '';
+  }
+
+  /// Envía una oración al servicio TTS y encola el resultado para reproducción.
+  Future<void> _enqueueSentence(String sentence, String apiHost) async {
+    final trimmed = sentence.trim();
+    if (trimmed.isEmpty) return;
+    try {
+      final req = http.Request('POST', Uri.parse('http://$apiHost:5001/synthesize_chunk'));
+      req.headers['Content-Type'] = 'application/json';
+      req.body = json.encode({'text': trimmed});
+
+      final res = await http.Client().send(req).timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return;
+
+      final body = await res.stream.bytesToString();
+      final data = json.decode(body);
+
+      final Uint8List audioBytes = base64Decode(data['audio_base64'] as String);
+
+      if (!mounted) return;
+      _audioQueue.add(_AudioChunk(audioBytes: audioBytes, text: trimmed));
+
+      // Arranca la reproducción si no hay nada reproduciéndose
+      if (!_isPlayingQueue) {
+        _playNextInQueue();
+      }
+    } catch (_) {
+      // Si un chunk falla, el pipeline continúa con los siguientes
+    }
+  }
+
+  /// Reproduce el siguiente chunk de la cola; cuando termina avanza al siguiente.
+  /// Al iniciar cada chunk: pausa el timer de inactividad (la IA está hablando).
+  /// Al vaciar la cola: reanuda el timer para que cuente desde ese momento.
+  void _playNextInQueue() async {
+    if (_audioQueue.isEmpty) {
+      _isPlayingQueue = false;
+      // --- Bug 3 fix: la IA terminó de hablar → arranca el timer de inactividad
+      if (mounted) {
+        setState(() { _activeChunkText = ''; });
+        _resetInactivityTimer();
+      }
+      return;
+    }
+
+    _isPlayingQueue = true;
+    // --- Bug 3 fix: cancelar el timer mientras la IA habla
+    _inactivityTimer?.cancel();
+
+    final chunk = _audioQueue.removeAt(0);
+
+    if (!mounted) return;
+    setState(() {
+      // Bug 1 fix: el karaoke resalta por oración usando el texto original del chunk
+      _activeChunkText = chunk.text;
+    });
+
+    await _audioPlayer.stop();
+    await _audioPlayer.play(BytesSource(chunk.audioBytes));
+
+    // Esperar que termine este chunk antes de pasar al siguiente
+    await _audioPlayer.onPlayerComplete.first;
+
+    if (mounted) {
+      // Mover el chunk a "ya pronunciado" para que quede en cian
+      setState(() {
+        _spokenText = (_spokenText + ' ' + chunk.text).trim();
+        _activeChunkText = '';
+      });
+      _playNextInQueue();
+    }
+  }
+}
+
+/// Chunk de audio ya sintetizado, listo para encolar y reproducir.
+class _AudioChunk {
+  final Uint8List audioBytes;
+  final String text;
+
+  const _AudioChunk({required this.audioBytes, required this.text});
 }
